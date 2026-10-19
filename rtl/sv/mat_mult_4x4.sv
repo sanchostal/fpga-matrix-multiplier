@@ -31,9 +31,6 @@ module mat_mult_4x4 #(
     logic [1:0] row_i;
     logic [1:0] k_idx;
 
-    logic signed [DATA_W-1:0] a_rd_data;
-    logic signed [DATA_W-1:0] b_rd_data [0:3];
-
     logic signed [DATA_W-1:0] a_pipe;
     logic signed [DATA_W-1:0] b_pipe [0:3];
     logic                     valid_pipe;
@@ -47,11 +44,6 @@ module mat_mult_4x4 #(
             bram_a[wr_addr] <= wr_data_a;
             bram_b[wr_addr] <= wr_data_b;
         end
-        a_rd_data    <= bram_a[{row_i, k_idx}];
-        b_rd_data[0] <= bram_b[{k_idx, 2'd0}];
-        b_rd_data[1] <= bram_b[{k_idx, 2'd1}];
-        b_rd_data[2] <= bram_b[{k_idx, 2'd2}];
-        b_rd_data[3] <= bram_b[{k_idx, 2'd3}];
     end
 
     assign rd_data_c = bram_c[rd_addr];
@@ -86,8 +78,11 @@ module mat_mult_4x4 #(
                 end
 
                 S_COMPUTE: begin
-                    a_pipe     <= a_rd_data;
-                    b_pipe     <= b_rd_data;
+                    a_pipe     <= bram_a[{row_i, k_idx}];
+                    b_pipe[0]  <= bram_b[{k_idx, 2'd0}];
+                    b_pipe[1]  <= bram_b[{k_idx, 2'd1}];
+                    b_pipe[2]  <= bram_b[{k_idx, 2'd2}];
+                    b_pipe[3]  <= bram_b[{k_idx, 2'd3}];
                     valid_pipe <= 1'b1;
                     row_pipe   <= row_i;
                     first_pipe <= (k_idx == 2'd0);
