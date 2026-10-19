@@ -3,90 +3,153 @@ use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.NUMERIC_STD.ALL;
 
 entity mat_mult_4x4 is
-    Port (
-        clk : in std_logic;
-        rst_n : in std_logic;
-        start : in std_logic;
-        A_flat: in std_logic_vector(127 downto 0);
-        B_flat: in std_logic_vector(127 downto 0);
-        C_flat: out std_logic_vector(319 downto 0);
-        done  : out std_logic
+    generic (
+        DATA_W : integer := 8;
+        ACC_W  : integer := 20
+    );
+    port (
+        clk       : in  std_logic;
+        rst_n     : in  std_logic;
+        start     : in  std_logic;
+        wr_en     : in  std_logic;
+        wr_addr   : in   unsigned(3 downto 0);
+        wr_data_a : in  signed(DATA_W-1 downto 0);
+        wr_data_b : in  signed(DATA_W-1 downto 0);
+        rd_addr   : in  unsigned(3 downto 0);
+        rd_data_c : out signed(ACC_W-1 downto 0);
+        done      : out std_logic
     );
 end mat_mult_4x4;
 
 architecture rtl of mat_mult_4x4 is
 
-        type mat_in_t is array( 0 to 3, 0 to 3) of signed(7 downto 0);
-        type mat_acc_t is array( 0 to 3, 0 to 3) of signed(19 downto 0);
+    type bram_t is array (0 to 15) of signed(DATA_W-1 downto 0);
+    signal bram_a : bram_t := (others => (others => '0'));
+    signal bram_b : bram_t := (others => (others => '0'));
 
-        signal A_mat : mat_in_t;
-        signal B_mat : mat_in_t;
-        signal C_mat : mat_acc_t;
+    type c_ram_t is array (0 to 15) of signed(ACC_W-1 downto 0);
+    signal bram_c : c_ram_t := (others => (others => '0'));
 
-        type state_t is (S_IDLE, S_CALC, S_DONE);
-        signal state : state_t;
+    type state_t is (S_IDLE, S_COMPUTE, S_DONE);
+    signal state : state_t;
 
-        signal k_idx : integer range 0 to 3;
+    signal row_i : unsigned(1 downto 0);
+    signal k_idx : unsigned(1 downto 0);
+
+    type row_vec_t is array (0 to 3) of signed(DATA_W-1 downto 0);
+    signal b_rd_data : row_vec_t;
+    signal a_rd_data : signed(DATA_W-1 downto 0);
+
+    signal a_pipe     : signed(DATA_W-1 downto 0);
+    signal b_pipe     : row_vec_t;
+    signal valid_pipe : std_logic;
+    signal first_pipe : std_logic;
+    signal row_pipe   : unsigned(1 downto 0);
+    signal last_pipe  : std_logic;
+
+    type acc_vec_t is array (0 to 3) of signed(ACC_W-1 downto 0);
+    signal mac_acc : acc_vec_t;
 
 begin
 
-    gen_unpack_r : for i in 0 to 3 generate
-        gen_unpack_c : for j in 0 to 3 generate
-            A_mat(i, j) <= signed(A_flat(((i*4 + j)*8 + 7) downto ((i*4 + j)*8)));
-            B_mat(i, j) <= signed(A_flat(((i*4 + j)*8 + 7) downto ((i*4 + j)*8)));
-            C_flat(((i*4 + j)*20 + 19) downto ((i*4 + j)*20)) <= std_logic_vector(C_mat(i, j));
-        end generate;
-    end generate;
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            if wr_en = '1' then
+                bram_a(to_integer(wr_addr)) <= wr_data_a;
+                bram_b(to_integer(wr_addr)) <= wr_data_b;
+            end if;
 
-    process (clk, rst_n)
+            a_rd_data <= bram_a(to_integer(row_i & k_idx));
+            b_rd_data(0) <= bram_b(to_integer(k_idx & "00"));
+            b_rd_data(1) <= bram_b(to_integer(k_idx & "01"));
+            b_rd_data(2) <= bram_b(to_integer(k_idx & "10"));
+            b_rd_data(3) <= bram_b(to_integer(k_idx & "11"));
+        end if;
+    end process;
+
+    rd_data_c <= bram_c(to_integer(rd_addr));
+
+    process(clk, rst_n)
         variable prod : signed(15 downto 0);
     begin
-        if rst_n = '0' then 
-            state <= S_IDLE;
-            k_idx <= 0;
-            done <= '0';
-            for i in 0 to 3 loop
-                for j in 0 to 3 loop
-                    C_mat(i, j) <= (others => '0');
-                end loop;
-            end loop;
+        if rst_n = '0' then
+            state      <= S_IDLE;
+            row_i      <= (others => '0');
+            k_idx      <= (others => '0');
+            done       <= '0';
+            a_pipe     <= (others => '0');
+            b_pipe     <= (others => (others => '0'));
+            valid_pipe <= '0';
+            first_pipe <= '0';
+            row_pipe   <= (others => '0');
+            last_pipe  <= '0';
+            mac_acc    <= (others => (others => '0'));
+            bram_c     <= (others => (others => '0'));
         elsif rising_edge(clk) then
-            case state is 
+            case state is
                 when S_IDLE =>
-                    done <= '0';
-                    k_idx <= 0;
+                    done       <= '0';
+                    row_i      <= (others => '0');
+                    k_idx      <= (others => '0');
+                    valid_pipe <= '0';
+                    last_pipe  <= '0';
                     if start = '1' then
-                        for i in 0 to 3 loop
-                            for j in 0 to 3 loop
-                                C_mat(i, j) <= (others => '0');
-                            end loop;
-                        end loop;
-                        state <= S_CALC;
+                        state <= S_COMPUTE;
                     end if;
-            
-                when S_CALC =>
-                    for i in 0 to 3 loop 
-                        for j in 0 to 3 loop
-                            prod := A_mat(i, k_idx) * B_mat(k_idx, j);
-                            C_mat(i, j) <= C_mat(i, j) + resize(prod, 20);
-                        end loop;
-                    end loop;
 
-                    if k_idx = 3 then 
-                        state <= S_DONE;
+                when S_COMPUTE =>
+                    a_pipe     <= a_rd_data;
+                    b_pipe     <= b_rd_data;
+                    valid_pipe <= '1';
+                    row_pipe   <= row_i;
+
+                    if k_idx = "00" then
+                        first_pipe <= '1';
                     else
-                        k_idx <= k_idx + 1;
+                        first_pipe <= '0';
                     end if;
-                
+
+                    if k_idx = "11" then
+                        k_idx <= "00";
+                        if row_i = "11" then
+                            row_i     <= "00";
+                            last_pipe <= '1';
+                            state     <= S_DONE;
+                        else
+                            row_i     <= row_i + 1;
+                            last_pipe <= '0';
+                        end if;
+                    else
+                        k_idx     <= k_idx + 1;
+                        last_pipe <= '0';
+                    end if;
+
                 when S_DONE =>
-                    done <= '1';
-                    state <= S_IDLE;
+                    valid_pipe <= '0';
+                    last_pipe  <= '0';
+                    if valid_pipe = '0' then
+                        done  <= '1';
+                        state <= S_IDLE;
+                    end if;
 
                 when others =>
                     state <= S_IDLE;
             end case;
+
+            if valid_pipe = '1' then
+                for j in 0 to 3 loop
+                    prod := a_pipe * b_pipe(j);
+                    if first_pipe = '1' then
+                        mac_acc(j) <= resize(prod, ACC_W);
+                        bram_c(to_integer(row_pipe) * 4 + j) <= resize(prod, ACC_W);
+                    else
+                        mac_acc(j) <= mac_acc(j) + resize(prod, ACC_W);
+                        bram_c(to_integer(row_pipe) * 4 + j) <= mac_acc(j) + resize(prod, ACC_W);
+                    end if;
+                end loop;
+            end if;
         end if;
     end process;
 
 end rtl;
-
