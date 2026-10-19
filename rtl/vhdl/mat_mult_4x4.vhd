@@ -12,7 +12,7 @@ entity mat_mult_4x4 is
         rst_n     : in  std_logic;
         start     : in  std_logic;
         wr_en     : in  std_logic;
-        wr_addr   : in   unsigned(3 downto 0);
+        wr_addr   : in  unsigned(3 downto 0);
         wr_data_a : in  signed(DATA_W-1 downto 0);
         wr_data_b : in  signed(DATA_W-1 downto 0);
         rd_addr   : in  unsigned(3 downto 0);
@@ -37,15 +37,11 @@ architecture rtl of mat_mult_4x4 is
     signal k_idx : unsigned(1 downto 0);
 
     type row_vec_t is array (0 to 3) of signed(DATA_W-1 downto 0);
-    signal b_rd_data : row_vec_t;
-    signal a_rd_data : signed(DATA_W-1 downto 0);
-
     signal a_pipe     : signed(DATA_W-1 downto 0);
     signal b_pipe     : row_vec_t;
     signal valid_pipe : std_logic;
     signal first_pipe : std_logic;
     signal row_pipe   : unsigned(1 downto 0);
-    signal last_pipe  : std_logic;
 
     type acc_vec_t is array (0 to 3) of signed(ACC_W-1 downto 0);
     signal mac_acc : acc_vec_t;
@@ -59,12 +55,6 @@ begin
                 bram_a(to_integer(wr_addr)) <= wr_data_a;
                 bram_b(to_integer(wr_addr)) <= wr_data_b;
             end if;
-
-            a_rd_data <= bram_a(to_integer(row_i & k_idx));
-            b_rd_data(0) <= bram_b(to_integer(k_idx & "00"));
-            b_rd_data(1) <= bram_b(to_integer(k_idx & "01"));
-            b_rd_data(2) <= bram_b(to_integer(k_idx & "10"));
-            b_rd_data(3) <= bram_b(to_integer(k_idx & "11"));
         end if;
     end process;
 
@@ -83,7 +73,6 @@ begin
             valid_pipe <= '0';
             first_pipe <= '0';
             row_pipe   <= (others => '0');
-            last_pipe  <= '0';
             mac_acc    <= (others => (others => '0'));
             bram_c     <= (others => (others => '0'));
         elsif rising_edge(clk) then
@@ -93,14 +82,16 @@ begin
                     row_i      <= (others => '0');
                     k_idx      <= (others => '0');
                     valid_pipe <= '0';
-                    last_pipe  <= '0';
                     if start = '1' then
                         state <= S_COMPUTE;
                     end if;
 
                 when S_COMPUTE =>
-                    a_pipe     <= a_rd_data;
-                    b_pipe     <= b_rd_data;
+                    a_pipe     <= bram_a(to_integer(row_i & k_idx));
+                    b_pipe(0)  <= bram_b(to_integer(k_idx & "00"));
+                    b_pipe(1)  <= bram_b(to_integer(k_idx & "01"));
+                    b_pipe(2)  <= bram_b(to_integer(k_idx & "10"));
+                    b_pipe(3)  <= bram_b(to_integer(k_idx & "11"));
                     valid_pipe <= '1';
                     row_pipe   <= row_i;
 
@@ -113,21 +104,17 @@ begin
                     if k_idx = "11" then
                         k_idx <= "00";
                         if row_i = "11" then
-                            row_i     <= "00";
-                            last_pipe <= '1';
-                            state     <= S_DONE;
+                            row_i <= "00";
+                            state <= S_DONE;
                         else
-                            row_i     <= row_i + 1;
-                            last_pipe <= '0';
+                            row_i <= row_i + 1;
                         end if;
                     else
-                        k_idx     <= k_idx + 1;
-                        last_pipe <= '0';
+                        k_idx <= k_idx + 1;
                     end if;
 
                 when S_DONE =>
                     valid_pipe <= '0';
-                    last_pipe  <= '0';
                     if valid_pipe = '0' then
                         done  <= '1';
                         state <= S_IDLE;
